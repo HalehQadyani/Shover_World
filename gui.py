@@ -1,129 +1,117 @@
 # gui.py
 """
-GUI controller for Shover-World (selection-based control)
-
-Features:
- - Mouse click selects ANY cell (box or empty).
- - Arrow keys / WASD: apply movement/push relative to selected cell.
- - B / H: special abilities.
- - R: reset episode.
- - Q: quit.
+Polished GUI controller for Shover-World (Strict Spec Compliance)
+- Sends actions z=1..6 directly (no 0-index mapping).
 """
 
 import pygame
 import numpy as np
-from environment import (
-    ShoverWorldEnv,
-    ACTION_MOVE_UP,
-    ACTION_MOVE_RIGHT,
-    ACTION_MOVE_DOWN,
-    ACTION_MOVE_LEFT,
-    ACTION_BARRIER_MAKER,
-    ACTION_HELLIFY
-)
+from environment import ShoverWorldEnv
+
+# Action Constants (1-6)
+try:
+    from environment import ACTION_UP, ACTION_RIGHT, ACTION_DOWN, ACTION_LEFT, ACTION_BARRIER_MAKER, ACTION_HELLIFY
+except ImportError:
+    ACTION_UP, ACTION_RIGHT, ACTION_DOWN, ACTION_LEFT = 1, 2, 3, 4
+    ACTION_BARRIER_MAKER, ACTION_HELLIFY = 5, 6
+
+# Map keys to Action IDs (1..6)
+_KEY_TO_Z = {
+    pygame.K_UP: ACTION_UP, pygame.K_w: ACTION_UP,
+    pygame.K_RIGHT: ACTION_RIGHT, pygame.K_d: ACTION_RIGHT,
+    pygame.K_DOWN: ACTION_DOWN, pygame.K_s: ACTION_DOWN,
+    pygame.K_LEFT: ACTION_LEFT, pygame.K_a: ACTION_LEFT,
+    pygame.K_b: ACTION_BARRIER_MAKER,
+    pygame.K_h: ACTION_HELLIFY,
+}
 
 
 class ShoverWorldGUI:
-    def __init__(self, map_path=None):
+    def __init__(self, map_path=None, render_mode='human'):
         pygame.init()
+        pygame.display.set_caption("Shover-World (Milestone 1)")
 
+        # Initialize Environment
         self.env = ShoverWorldEnv(
-            render_mode='human',
+            render_mode=render_mode,
             map_path=map_path,
-            initial_stamina=1000,
-            initial_force=4.0,
-            unit_force=1.0,
-            max_timestep=400
+            initial_stamina=1000.0,
+            initial_force=40.0,  # Spec default is 40, not 4
+            unit_force=10.0  # Spec default is 10, not 1
         )
 
         self.obs, self.info = self.env.reset()
+
+        # Selection Cursor Logic
+        try:
+            self.selected = tuple(self.env.agent_pos)
+        except AttributeError:
+            self.selected = (0, 0)
+
         self.running = True
+        self.clock = pygame.time.Clock()
 
-        print("--- Shover-World Manual Control ---")
-        print("Controls:")
-        print("  WASD / Arrows : Push/Move selection-based")
-        print("  B             : Barrier Maker")
-        print("  H             : Hellify")
-        print("  Mouse Click   : SELECT cell (not teleport)")
-        print("  R             : Reset Episode")
-        print("  Q             : Quit")
-        print("-----------------------------------")
+        print("--- Controls ---")
+        print("Arrows/WASD: Move/Push | B: Barrier | H: Hellify")
+        print("Click: Select Cell | R: Reset | Q: Quit")
 
-    # ----------------------------------
-    #  Keyboard → Action mapping
-    # ----------------------------------
-    def get_action_from_keyboard(self, key):
-        if key in (pygame.K_UP, pygame.K_w):
-            return ACTION_MOVE_UP
-        if key in (pygame.K_RIGHT, pygame.K_d):
-            return ACTION_MOVE_RIGHT
-        if key in (pygame.K_DOWN, pygame.K_s):
-            return ACTION_MOVE_DOWN
-        if key in (pygame.K_LEFT, pygame.K_a):
-            return ACTION_MOVE_LEFT
-        if key == pygame.K_b:
-            return ACTION_BARRIER_MAKER
-        if key == pygame.K_h:
-            return ACTION_HELLIFY
-        return None
-
-    # ----------------------------------
-    #  Mouse click selects target cell
-    # ----------------------------------
-    def handle_mouse_click(self, pos):
-        mx, my = pos
-        col = mx // self.env.cell_size
-        row = my // self.env.cell_size
-
-        # Ensure click is within grid (not HUD)
-        if 0 <= row < self.env.n_rows and 0 <= col < self.env.n_cols:
-            self.env.agent_pos = (row, col)
-            print(f"Selected cell -> ({row}, {col})")
-
-    # ----------------------------------
-    #  Main GUI loop
-    # ----------------------------------
     def run(self):
         while self.running:
+            action_to_send = None
 
-            action = None
-
-            # ---------- Event Handling ----------
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
-
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    self.handle_mouse_click(pygame.mouse.get_pos())
-
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_q:
+                    if event.key in (pygame.K_q, pygame.K_ESCAPE):
                         self.running = False
-
                     elif event.key == pygame.K_r:
                         self.obs, self.info = self.env.reset()
-                        print("Episode Reset.")
+                        self.selected = tuple(self.env.agent_pos)
+                        print("--- Reset ---")
+                    else:
+                        # Get z value (1..6)
+                        z_val = _KEY_TO_Z.get(event.key)
+                        if z_val is not None:
+                            # SEND DIRECTLY (Do not subtract 1)
+                            action_to_send = (self.selected, z_val)
 
-                    action = self.get_action_from_keyboard(event.key)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    mx, my = pygame.mouse.get_pos()
+                    # Assume 40px cell size from environment defaults
+                    r, c = my // 40, mx // 40
+                    if 0 <= r < self.env.n_rows and 0 <= c < self.env.n_cols:
+                        self.selected = (r, c)
+                        # Visually sync agent pos to selection for rendering highlight
+                        self.env.agent_pos = (r, c)
 
-            # ---------- Step the environment ----------
-            if action is not None:
-                self.obs, reward, terminated, truncated, info = self.env.step(action)
+            if action_to_send:
+                # Step the environment
+                obs, reward, term, trunc, info = self.env.step(action_to_send)
+                self.obs, self.info = obs, info
 
-                print(f"Step {info['timestep']} | Action: {action} | Reward: {reward:.2f} | Stamina: {info['stamina']}")
-                if not info["last_action_valid"]:
-                    print("  -> Invalid Action!")
-                if info["lava_destroyed_this_step"] > 0:
-                    print(f"  -> Burned {info['lava_destroyed_this_step']} box(es)!")
+                # Sync selection if the agent moved automatically
+                self.selected = tuple(self.env.agent_pos)
 
-                if terminated or truncated:
-                    print("Episode ended — resetting.")
+                # Debug output
+                valid = info.get('last_action_valid', True)
+                stamina = info.get('stamina', 0)
+                print(
+                    f"Step: {info.get('timestep')} | Action: {action_to_send[1]} | Valid: {valid} | Stamina: {stamina:.1f}")
+
+                if term or trunc:
+                    print("Episode Finished. Resetting...")
                     self.obs, self.info = self.env.reset()
+                    self.selected = tuple(self.env.agent_pos)
 
-            # ---------- Render ----------
             self.env.render()
+            self.clock.tick(30)
 
-        # Cleanup
         self.env.close()
         pygame.quit()
 
+
+if __name__ == "__main__":
+    # You can test with: python gui.py
+    gui = ShoverWorldGUI(map_path=None)
+    gui.run()
